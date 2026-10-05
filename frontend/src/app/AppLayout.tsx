@@ -1,10 +1,11 @@
+import type { ReactNode } from 'react'
 import type { AppSection } from '../shared/types'
 import { NAVIGATION_ITEMS } from './navigation'
 
 type AppLayoutProps = {
   activeSection: AppSection
   onSectionChange: (section: AppSection) => void
-  children: React.ReactNode
+  children: ReactNode
 }
 
 const groups = Array.from(new Set(NAVIGATION_ITEMS.map((item) => item.group)))
