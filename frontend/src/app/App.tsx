@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { AppSection, CharacterProfile, MapRegion, RelationshipLink, StoryPlan, StoryScene, StoryWorkspace, WorldConfig } from '../shared/types'
+import { useI18n } from '../shared/i18n'
 import { isSupabaseConfigured } from '../lib/supabaseClient'
 import { AppLayout } from './AppLayout'
 import { DashboardPage } from '../domains/dashboard/DashboardPage'
@@ -15,6 +16,7 @@ import { KnowledgeBasePage } from '../domains/knowledge/KnowledgeBasePage'
 import { ProductionHubPage } from '../domains/production/ProductionHubPage'
 
 export function App() {
+  const { isKo } = useI18n()
   const [activeSection, setActiveSection] = useState<AppSection>('dashboard')
   const [world, setWorld] = useState<WorldConfig | null>(null)
   const [regions, setRegions] = useState<MapRegion[]>([])
@@ -50,7 +52,9 @@ export function App() {
     <AppLayout activeSection={activeSection} onSectionChange={setActiveSection}>
       {!isSupabaseConfigured && (
         <div className="notice notice--warning">
-          Supabase 환경변수가 없습니다. 현재 화면에서는 로컬 메모리 상태로 동작하며, 새로고침 시 데이터가 초기화됩니다.
+          {isKo
+            ? 'Supabase 환경변수가 없습니다. 현재 화면에서는 로컬 메모리 상태로 동작하며, 새로고침 시 데이터가 초기화됩니다.'
+            : 'Supabase environment variables are missing. The app is currently running in local memory mode, so data resets after refresh.'}
         </div>
       )}
 
