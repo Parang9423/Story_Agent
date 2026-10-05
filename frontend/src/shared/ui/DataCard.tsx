@@ -1,7 +1,9 @@
+import type { ReactNode } from 'react'
+
 type DataCardProps = {
   title: string
   subtitle?: string
-  children: React.ReactNode
+  children: ReactNode
 }
 
 export function DataCard({ title, subtitle, children }: DataCardProps) {
