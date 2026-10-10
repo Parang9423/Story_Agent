@@ -231,6 +231,7 @@ function toWorldPayload(projectId: string, world: WorldConfig) {
 
 function toRegionPayload(projectId: string, worldId: string, region: MapRegion) {
   return {
+    ...(isUuid(region.id) ? { id: region.id } : {}),
     project_id: projectId,
     world_id: worldId,
     name: region.name,
