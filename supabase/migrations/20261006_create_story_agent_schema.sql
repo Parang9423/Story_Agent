@@ -135,3 +135,12 @@ create index if not exists idx_story_relationships_project_id on public.story_re
 create index if not exists idx_story_plans_project_id on public.story_plans(project_id);
 create index if not exists idx_story_scenes_project_id on public.story_scenes(project_id);
 create index if not exists idx_continuity_issues_project_id on public.continuity_issues(project_id);
+
+grant select, insert, update, delete on public.story_projects to anon, authenticated;
+grant select, insert, update, delete on public.world_settings to anon, authenticated;
+grant select, insert, update, delete on public.map_regions to anon, authenticated;
+grant select, insert, update, delete on public.story_characters to anon, authenticated;
+grant select, insert, update, delete on public.story_relationships to anon, authenticated;
+grant select, insert, update, delete on public.story_plans to anon, authenticated;
+grant select, insert, update, delete on public.story_scenes to anon, authenticated;
+grant select, insert, update, delete on public.continuity_issues to anon, authenticated;
