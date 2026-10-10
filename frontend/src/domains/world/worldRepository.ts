@@ -62,7 +62,8 @@ export async function loadPersistedWorldWorkspace(): Promise<PersistedWorldWorks
     .eq('project_id', project.id)
     .order('updated_at', { ascending: false })
     .limit(1)
-    .maybeSingle<WorldSettingsRow>()
+    .returns<WorldSettingsRow[]>()
+    .maybeSingle()
 
   if (worldError) throw worldError
 
@@ -91,15 +92,15 @@ export async function saveWorldAndRegions(
   world: WorldConfig,
   regions: MapRegion[],
 ): Promise<{ world: WorldConfig; regions: MapRegion[] }> {
-  const client = requireSupabase()
   const project = await ensureDefaultProject()
   const worldPayload = toWorldPayload(project.id, world)
 
-  const { data: worldRow, error: worldError } = await client
+  const { data: worldRow, error: worldError } = await requireSupabase()
     .from('world_settings')
     .upsert(worldPayload)
     .select('*')
-    .single<WorldSettingsRow>()
+    .returns<WorldSettingsRow[]>()
+    .single()
 
   if (worldError) throw worldError
 
@@ -123,11 +124,13 @@ export async function saveRegionsForWorld(
     return result.regions
   }
 
-  await client
+  const { error: updateError } = await client
     .from('world_settings')
     .update({ updated_at: new Date().toISOString() })
     .eq('id', world.id)
     .eq('project_id', project.id)
+
+  if (updateError) throw updateError
 
   return replaceMapRegions(project.id, world.id, regions)
 }
@@ -140,7 +143,8 @@ async function ensureDefaultProject(): Promise<StoryProjectRow> {
       .from('story_projects')
       .select('*')
       .eq('id', cachedProjectId)
-      .maybeSingle<StoryProjectRow>()
+      .returns<StoryProjectRow[]>()
+      .maybeSingle()
 
     if (error) throw error
     if (data) return data
@@ -152,7 +156,8 @@ async function ensureDefaultProject(): Promise<StoryProjectRow> {
     .select('*')
     .order('created_at', { ascending: true })
     .limit(1)
-    .maybeSingle<StoryProjectRow>()
+    .returns<StoryProjectRow[]>()
+    .maybeSingle()
 
   if (existingError) throw existingError
 
@@ -165,7 +170,8 @@ async function ensureDefaultProject(): Promise<StoryProjectRow> {
     .from('story_projects')
     .insert({ title: DEFAULT_PROJECT_TITLE, status: 'active' })
     .select('*')
-    .single<StoryProjectRow>()
+    .returns<StoryProjectRow[]>()
+    .single()
 
   if (createError) throw createError
 
