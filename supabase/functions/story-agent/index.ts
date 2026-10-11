@@ -333,10 +333,22 @@ function buildSystemPrompt(request: AgentRequest) {
       "description": "suggestion description",
       "targetId": "target id or null",
       "patch": {
-        "name": "optional region name",
-        "regionType": "continent | ocean | mountain | forest | desert | nation | city | dimension_gate",
-        "climate": "optional climate text",
-        "loreSummary": "optional lore summary text"
+        "name": "optional name",
+        "regionType": "optional map region type",
+        "climate": "optional map climate text",
+        "loreSummary": "optional map lore summary text",
+        "role": "optional character story role",
+        "publicPersona": "optional public-facing personality",
+        "innerSelf": "optional hidden inner self",
+        "coreDesire": "optional core desire",
+        "coreFear": "optional core fear",
+        "moralCode": "optional moral code",
+        "contradiction": "optional contradiction",
+        "trauma": "optional trauma or wound",
+        "speechStyle": "optional speech style",
+        "behaviorPattern": "optional behavior pattern",
+        "visualSignature": "optional visual signature",
+        "relationshipNotes": "optional relationship hooks"
       },
       "followUpQuestion": "optional follow-up question or null",
       "payload": null
@@ -365,6 +377,20 @@ function buildSystemPrompt(request: AgentRequest) {
       'Do not invent impossible geometry or coordinates. Only patch name, regionType, climate, and loreSummary.',
       'Also provide 2-4 follow-up questions that help the user deepen the worldbuilding.',
       'If no selectedRegion exists, return ask_followup suggestions instead of update_region.',
+    ].join('\n')
+  }
+
+  if (request.mode === 'character') {
+    return [
+      commonRules,
+      'Current task: Character Agent.',
+      'Use context.draftCharacter and context.currentQuestion to strengthen the current character draft.',
+      'Create at most one update_character suggestion if there is already meaningful draft data.',
+      'Create at most one create_character suggestion if the draft is mostly empty and the user asks for a new character.',
+      'Only patch these character fields: name, role, publicPersona, innerSelf, coreDesire, coreFear, moralCode, contradiction, trauma, speechStyle, behaviorPattern, visualSignature, relationshipNotes.',
+      'Make the character dramatically useful: clear external role, hidden need, desire/fear tension, contradiction, speech style, and relationship hooks.',
+      'Do not add relationship objects directly. Put relationship ideas in relationshipNotes and follow-up questions.',
+      'Also provide 2-4 follow-up questions that help the user deepen the character.',
     ].join('\n')
   }
 
@@ -413,7 +439,24 @@ function normalizeSuggestion(value: unknown, index: number): AgentSuggestion | n
 function cleanPatch(patch: unknown) {
   if (!patch || typeof patch !== 'object') return undefined
 
-  const allowedKeys = new Set(['name', 'regionType', 'climate', 'loreSummary'])
+  const allowedKeys = new Set([
+    'name',
+    'regionType',
+    'climate',
+    'loreSummary',
+    'role',
+    'publicPersona',
+    'innerSelf',
+    'coreDesire',
+    'coreFear',
+    'moralCode',
+    'contradiction',
+    'trauma',
+    'speechStyle',
+    'behaviorPattern',
+    'visualSignature',
+    'relationshipNotes',
+  ])
 
   return Object.fromEntries(
     Object.entries(patch as Record<string, unknown>)
