@@ -5,6 +5,8 @@ import { createId } from '../../shared/id'
 import { SectionHeader } from '../../shared/ui/SectionHeader'
 import { DataCard } from '../../shared/ui/DataCard'
 import { TextArea } from '../../shared/ui/FormFields'
+import { AgentAssistantPanel } from '../agent/AgentAssistantPanel'
+import type { AgentSuggestion } from '../agent/types'
 import { CHARACTER_BUILDER_QUESTIONS } from './characterBuilderFlow'
 
 type CharacterBuilderPageProps = {
@@ -28,6 +30,22 @@ const emptyCharacter: CharacterProfile = {
   relationshipNotes: '',
 }
 
+const CHARACTER_PATCH_KEYS: Array<keyof CharacterProfile> = [
+  'name',
+  'role',
+  'publicPersona',
+  'innerSelf',
+  'coreDesire',
+  'coreFear',
+  'moralCode',
+  'contradiction',
+  'trauma',
+  'speechStyle',
+  'behaviorPattern',
+  'visualSignature',
+  'relationshipNotes',
+]
+
 export function CharacterBuilderPage({ onSaveCharacter }: CharacterBuilderPageProps) {
   const { language, isKo } = useI18n()
   const [stepIndex, setStepIndex] = useState(0)
@@ -43,6 +61,20 @@ export function CharacterBuilderPage({ onSaveCharacter }: CharacterBuilderPagePr
 
   const updateAnswer = (value: string) => {
     setDraft((current) => ({ ...current, [currentQuestion.key]: value }))
+  }
+
+  const handleApplyAgentSuggestion = (suggestion: AgentSuggestion) => {
+    if (!suggestion.patch || !['create_character', 'update_character'].includes(suggestion.type)) return
+
+    const safePatch = Object.fromEntries(
+      Object.entries(suggestion.patch).filter(([key, value]) =>
+        CHARACTER_PATCH_KEYS.includes(key as keyof CharacterProfile) && typeof value === 'string',
+      ),
+    ) as Partial<CharacterProfile>
+
+    if (Object.keys(safePatch).length === 0) return
+
+    setDraft((current) => ({ ...current, ...safePatch }))
   }
 
   const handleSave = () => {
@@ -101,6 +133,22 @@ export function CharacterBuilderPage({ onSaveCharacter }: CharacterBuilderPagePr
           </dl>
         </DataCard>
       </div>
+
+      <AgentAssistantPanel
+        mode="character"
+        title={isKo ? '인물 설정 에이전트' : 'Character Design Agent'}
+        description={isKo ? '현재 작성 중인 인물 초안을 바탕으로 이름, 역할, 내면, 욕망, 두려움, 말투, 외형 시그니처를 보강합니다. 제안 적용 후 인물 저장을 눌러야 목록에 반영됩니다.' : 'Strengthen the current character draft with identity, role, inner self, desire, fear, speech style, and visual signature. Apply suggestions, then save the character.'}
+        context={{
+          draftCharacter: draft,
+          currentQuestion: {
+            key: currentQuestion.key,
+            label: currentQuestion.label[language],
+            prompt: currentQuestion.prompt[language],
+          },
+          completionRate,
+        }}
+        onApplySuggestion={handleApplyAgentSuggestion}
+      />
     </section>
   )
 }
