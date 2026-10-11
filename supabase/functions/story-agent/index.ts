@@ -129,6 +129,7 @@ async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentR
                     patch: {
                       type: ['object', 'null'],
                       additionalProperties: false,
+                      required: ['name', 'regionType', 'climate', 'loreSummary'],
                       properties: {
                         name: { type: ['string', 'null'] },
                         regionType: {
@@ -140,7 +141,11 @@ async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentR
                       },
                     },
                     followUpQuestion: { type: ['string', 'null'] },
-                    payload: { type: ['object', 'null'], additionalProperties: true },
+                    payload: {
+                      type: ['object', 'null'],
+                      additionalProperties: false,
+                      properties: {},
+                    },
                   },
                 },
               },
