@@ -3,6 +3,7 @@ import { useI18n } from '../../shared/i18n'
 import { isSupabaseConfigured } from '../../lib/supabaseClient'
 import { requestAgentAssistance } from './agentClient'
 import type { AgentMode, AgentResponse, AgentSuggestion } from './types'
+import './agent.css'
 
 type AgentAssistantPanelProps = {
   mode: AgentMode
