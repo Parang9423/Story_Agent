@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { MapRegion, WorldConfig } from '../../shared/types'
 import { useI18n } from '../../shared/i18n'
 import { SectionHeader } from '../../shared/ui/SectionHeader'
 import { DataCard } from '../../shared/ui/DataCard'
 import { TextArea, TextInput } from '../../shared/ui/FormFields'
+import { AgentAssistantPanel } from '../agent/AgentAssistantPanel'
+import type { AgentSuggestion } from '../agent/types'
 import { generateRegionsFromWorld } from './proceduralMap'
 import { MapCanvas } from './MapCanvas'
 
@@ -33,6 +35,21 @@ export function MapBuilderPage({ world, regions, onSaveRegions }: MapBuilderPage
     setIsDirty(false)
   }, [regions])
 
+  const agentContext = useMemo(
+    () => ({
+      world,
+      selectedRegion,
+      regions: draftRegions.map((region) => ({
+        id: region.id,
+        name: region.name,
+        regionType: region.regionType,
+        climate: region.climate,
+        loreSummary: region.loreSummary,
+      })),
+    }),
+    [draftRegions, selectedRegion, world],
+  )
+
   const updateRegion = <K extends keyof MapRegion>(key: K, value: MapRegion[K]) => {
     if (!selectedRegion) return
 
@@ -41,6 +58,27 @@ export function MapBuilderPage({ world, regions, onSaveRegions }: MapBuilderPage
         region.id === selectedRegion.id ? { ...region, [key]: value } : region,
       ),
     )
+    setIsDirty(true)
+  }
+
+  const handleApplyAgentSuggestion = (suggestion: AgentSuggestion) => {
+    if (suggestion.type !== 'update_region' || !suggestion.patch) return
+
+    const targetId = suggestion.targetId ?? selectedRegion?.id
+    if (!targetId) return
+
+    setDraftRegions((currentRegions) =>
+      currentRegions.map((region) => {
+        if (region.id !== targetId) return region
+
+        return {
+          ...region,
+          ...suggestion.patch,
+          regionType: suggestion.patch?.regionType ?? region.regionType,
+        }
+      }),
+    )
+    setSelectedRegionId(targetId)
     setIsDirty(true)
   }
 
@@ -78,7 +116,7 @@ export function MapBuilderPage({ world, regions, onSaveRegions }: MapBuilderPage
       <SectionHeader
         eyebrow={isKo ? '세계 시각화' : 'World Visualization'}
         title={isKo ? '지도 빌더' : 'Map Builder'}
-        description={isKo ? '세계 설정에서 생성한 대륙을 2D 정사각형 지도에서 보고, 각 지역의 기후와 로어를 편집합니다. 3D Globe는 같은 region 데이터를 기반으로 확장됩니다.' : 'Review generated continents on a square 2D map and edit each region’s climate and lore. The 3D globe will extend from the same region data.'}
+        description={isKo ? '세계 설정에서 생성한 대륙을 2D 정사각형 지도에서 보고, 각 지역의 기후와 로어를 편집합니다. 에이전트는 선택한 지역 설정을 제안하고 사용자가 승인한 내용만 반영합니다.' : 'Review generated continents on a square 2D map and edit each region’s climate and lore. The agent suggests improvements for the selected region, and only approved suggestions are applied.'}
         actions={
           <div className="button-row button-row--header">
             <button type="button" onClick={handleSave} disabled={!world || !isDirty || isSaving}>
@@ -125,6 +163,18 @@ export function MapBuilderPage({ world, regions, onSaveRegions }: MapBuilderPage
           )}
         </DataCard>
       </div>
+
+      <AgentAssistantPanel
+        mode="map"
+        title={isKo ? '지도 설정 에이전트' : 'Map Agent'}
+        description={
+          isKo
+            ? '선택한 대륙의 이름, 기후, 로어, 갈등 단서를 세계관과 연결해 제안합니다. 제안 적용 후 저장 버튼을 눌러야 DB에 반영됩니다.'
+            : 'Suggests names, climate, lore, and conflict hooks for the selected continent based on the world context. Apply a suggestion, then save to persist it.'
+        }
+        context={agentContext}
+        onApplySuggestion={handleApplyAgentSuggestion}
+      />
     </section>
   )
 }
