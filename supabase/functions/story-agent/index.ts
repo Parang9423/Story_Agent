@@ -26,6 +26,11 @@ type AgentResponse = {
   followUpQuestions: string[]
 }
 
+type GeminiModel = {
+  name?: string
+  supportedGenerationMethods?: string[]
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -99,19 +104,12 @@ async function callConfiguredProvider(request: AgentRequest): Promise<AgentRespo
 
 async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentResponse> {
   const configuredModel = Deno.env.get('GEMINI_MODEL')
-  const modelCandidates = uniqueStrings([
-    configuredModel,
-    'gemini-3.8-flash',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-flash',
-  ])
-
+  const modelCandidates = await getGeminiModelCandidates(apiKey, configuredModel)
   let lastModelError = ''
 
-  for (const model of modelCandidates) {
-    const normalizedModel = model.replace(/^models\//, '')
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`
+  for (let index = 0; index < modelCandidates.length; index += 1) {
+    const model = modelCandidates[index]
+    const url = `https://generativelanguage.googleapis.com/v1beta/${toGeminiModelPath(model)}:generateContent?key=${encodeURIComponent(apiKey)}`
 
     const apiResponse = await fetch(url, {
       method: 'POST',
@@ -148,9 +146,9 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
     if (!apiResponse.ok) {
       const errorText = await apiResponse.text()
       const trimmedError = trimErrorText(errorText)
-      lastModelError = `Gemini API request failed with model ${normalizedModel}: ${apiResponse.status} ${trimmedError}`
+      lastModelError = `Gemini API request failed with model ${model}: ${apiResponse.status} ${trimmedError}`
 
-      if (shouldTryNextGeminiModel(apiResponse.status, modelCandidates, normalizedModel)) {
+      if (isRetryableGeminiStatus(apiResponse.status) && index < modelCandidates.length - 1) {
         console.warn(lastModelError)
         continue
       }
@@ -162,9 +160,9 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
     const content = data?.candidates?.[0]?.content?.parts?.[0]?.text
 
     if (typeof content !== 'string') {
-      lastModelError = `Gemini response did not include text content for model ${normalizedModel}`
+      lastModelError = `Gemini response did not include text content for model ${model}`
 
-      if (modelCandidates.length > 1) {
+      if (index < modelCandidates.length - 1) {
         console.warn(lastModelError)
         continue
       }
@@ -177,9 +175,9 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
     try {
       parsed = JSON.parse(stripJsonFence(content))
     } catch {
-      lastModelError = `Gemini response was not valid JSON for model ${normalizedModel}`
+      lastModelError = `Gemini response was not valid JSON for model ${model}`
 
-      if (modelCandidates.length > 1) {
+      if (index < modelCandidates.length - 1) {
         console.warn(lastModelError)
         continue
       }
@@ -190,7 +188,79 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
     return normalizeAgentResponse(parsed)
   }
 
-  throw new Error(lastModelError || 'Gemini API request failed for all configured model candidates')
+  throw new Error(lastModelError || 'Gemini API request failed for all model candidates')
+}
+
+async function getGeminiModelCandidates(apiKey: string, configuredModel: string | null | undefined) {
+  const listedModels = await listGeminiGenerateContentModels(apiKey)
+  const preferredListedModels = sortGeminiModelsByPreference(listedModels)
+
+  return uniqueStrings([
+    configuredModel,
+    ...preferredListedModels,
+    // Emergency fallbacks. These are attempted only after the live model list.
+    'gemini-3.8-flash',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+  ]).slice(0, 12)
+}
+
+async function listGeminiGenerateContentModels(apiKey: string): Promise<string[]> {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    console.warn(`Gemini model list request failed: ${response.status} ${trimErrorText(errorText)}`)
+    return []
+  }
+
+  const data = await response.json()
+  const models = Array.isArray(data?.models) ? data.models as GeminiModel[] : []
+
+  return models
+    .filter((model) =>
+      typeof model.name === 'string' &&
+      Array.isArray(model.supportedGenerationMethods) &&
+      model.supportedGenerationMethods.includes('generateContent'),
+    )
+    .map((model) => model.name!)
+}
+
+function sortGeminiModelsByPreference(models: string[]) {
+  return [...models].sort((a, b) => scoreGeminiModel(b) - scoreGeminiModel(a))
+}
+
+function scoreGeminiModel(model: string) {
+  const normalized = model.toLowerCase()
+  let score = 0
+
+  if (normalized.includes('gemini')) score += 100
+  if (normalized.includes('flash')) score += 80
+  if (normalized.includes('lite')) score += 20
+  if (normalized.includes('pro')) score += 10
+  if (normalized.includes('vision')) score -= 20
+  if (normalized.includes('embedding')) score -= 100
+  if (normalized.includes('imagen')) score -= 100
+  if (normalized.includes('tts')) score -= 100
+
+  const versionMatch = normalized.match(/gemini-(\d+)(?:\.(\d+))?/)
+  if (versionMatch) {
+    score += Number(versionMatch[1]) * 10
+    score += Number(versionMatch[2] ?? 0)
+  }
+
+  return score
+}
+
+function toGeminiModelPath(model: string) {
+  const trimmedModel = model.trim()
+  return trimmedModel.startsWith('models/') ? trimmedModel : `models/${trimmedModel}`
+}
+
+function isRetryableGeminiStatus(status: number) {
+  return [404, 408, 409, 429, 500, 502, 503, 504].includes(status)
 }
 
 async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentResponse> {
@@ -359,17 +429,6 @@ function jsonResponse(body: unknown, status: number) {
       'Content-Type': 'application/json',
     },
   })
-}
-
-function shouldTryNextGeminiModel(status: number, modelCandidates: string[], attemptedModel: string) {
-  if (modelCandidates.length <= 1) return false
-
-  const normalizedCandidates = modelCandidates.map((model) => model.replace(/^models\//, ''))
-  const isLastCandidate = normalizedCandidates[normalizedCandidates.length - 1] === attemptedModel
-
-  if (isLastCandidate) return false
-
-  return [404, 429, 500, 502, 503, 504].includes(status)
 }
 
 function stripJsonFence(value: string) {
