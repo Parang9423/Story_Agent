@@ -150,7 +150,7 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
       const trimmedError = trimErrorText(errorText)
       lastModelError = `Gemini API request failed with model ${normalizedModel}: ${apiResponse.status} ${trimmedError}`
 
-      if (apiResponse.status === 404 && modelCandidates.length > 1) {
+      if (shouldTryNextGeminiModel(apiResponse.status, modelCandidates, normalizedModel)) {
         console.warn(lastModelError)
         continue
       }
@@ -162,7 +162,14 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
     const content = data?.candidates?.[0]?.content?.parts?.[0]?.text
 
     if (typeof content !== 'string') {
-      throw new Error(`Gemini response did not include text content for model ${normalizedModel}`)
+      lastModelError = `Gemini response did not include text content for model ${normalizedModel}`
+
+      if (modelCandidates.length > 1) {
+        console.warn(lastModelError)
+        continue
+      }
+
+      throw new Error(lastModelError)
     }
 
     let parsed: unknown
@@ -170,7 +177,14 @@ async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentR
     try {
       parsed = JSON.parse(stripJsonFence(content))
     } catch {
-      throw new Error(`Gemini response was not valid JSON for model ${normalizedModel}`)
+      lastModelError = `Gemini response was not valid JSON for model ${normalizedModel}`
+
+      if (modelCandidates.length > 1) {
+        console.warn(lastModelError)
+        continue
+      }
+
+      throw new Error(lastModelError)
     }
 
     return normalizeAgentResponse(parsed)
@@ -345,6 +359,17 @@ function jsonResponse(body: unknown, status: number) {
       'Content-Type': 'application/json',
     },
   })
+}
+
+function shouldTryNextGeminiModel(status: number, modelCandidates: string[], attemptedModel: string) {
+  if (modelCandidates.length <= 1) return false
+
+  const normalizedCandidates = modelCandidates.map((model) => model.replace(/^models\//, ''))
+  const isLastCandidate = normalizedCandidates[normalizedCandidates.length - 1] === attemptedModel
+
+  if (isLastCandidate) return false
+
+  return [404, 429, 500, 502, 503, 504].includes(status)
 }
 
 function stripJsonFence(value: string) {
