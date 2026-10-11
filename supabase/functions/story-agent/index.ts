@@ -9,18 +9,20 @@ type AgentRequest = {
   context: Record<string, unknown>
 }
 
+type AgentSuggestion = {
+  id: string
+  type: string
+  title: string
+  description: string
+  targetId?: string
+  patch?: Record<string, unknown>
+  followUpQuestion?: string
+  payload?: unknown
+}
+
 type AgentResponse = {
   message: string
-  suggestions: Array<{
-    id: string
-    type: string
-    title: string
-    description: string
-    targetId?: string
-    patch?: Record<string, unknown>
-    followUpQuestion?: string
-    payload?: unknown
-  }>
+  suggestions: AgentSuggestion[]
   followUpQuestions: string[]
 }
 
@@ -42,6 +44,7 @@ Deno.serve(async (req: Request) => {
   const openAiApiKey = Deno.env.get('OPENAI_API_KEY')
 
   if (!openAiApiKey) {
+    console.error('OPENAI_API_KEY is not configured')
     return jsonResponse({ error: 'OPENAI_API_KEY is not configured' }, 500)
   }
 
@@ -52,7 +55,9 @@ Deno.serve(async (req: Request) => {
 
     return jsonResponse(response, 200)
   } catch (error) {
-    return jsonResponse({ error: getErrorMessage(error) }, 500)
+    const message = getErrorMessage(error)
+    console.error('story-agent failed:', message)
+    return jsonResponse({ error: message }, 500)
   }
 })
 
@@ -100,69 +105,13 @@ async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentR
           }),
         },
       ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'story_agent_response',
-          strict: true,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['message', 'suggestions', 'followUpQuestions'],
-            properties: {
-              message: { type: 'string' },
-              suggestions: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['id', 'type', 'title', 'description', 'targetId', 'patch', 'followUpQuestion', 'payload'],
-                  properties: {
-                    id: { type: 'string' },
-                    type: {
-                      type: 'string',
-                      enum: ['update_region', 'ask_followup', 'create_character', 'update_character', 'suggest_relationship'],
-                    },
-                    title: { type: 'string' },
-                    description: { type: 'string' },
-                    targetId: { type: ['string', 'null'] },
-                    patch: {
-                      type: ['object', 'null'],
-                      additionalProperties: false,
-                      required: ['name', 'regionType', 'climate', 'loreSummary'],
-                      properties: {
-                        name: { type: ['string', 'null'] },
-                        regionType: {
-                          type: ['string', 'null'],
-                          enum: ['continent', 'ocean', 'mountain', 'forest', 'desert', 'nation', 'city', 'dimension_gate', null],
-                        },
-                        climate: { type: ['string', 'null'] },
-                        loreSummary: { type: ['string', 'null'] },
-                      },
-                    },
-                    followUpQuestion: { type: ['string', 'null'] },
-                    payload: {
-                      type: ['object', 'null'],
-                      additionalProperties: false,
-                      properties: {},
-                    },
-                  },
-                },
-              },
-              followUpQuestions: {
-                type: 'array',
-                items: { type: 'string' },
-              },
-            },
-          },
-        },
-      },
+      response_format: { type: 'json_object' },
     }),
   })
 
   if (!apiResponse.ok) {
     const errorText = await apiResponse.text()
-    throw new Error(`OpenAI API request failed: ${apiResponse.status} ${errorText}`)
+    throw new Error(`OpenAI API request failed: ${apiResponse.status} ${trimErrorText(errorText)}`)
   }
 
   const data = await apiResponse.json()
@@ -172,24 +121,54 @@ async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentR
     throw new Error('OpenAI response did not include JSON content')
   }
 
-  const parsed = JSON.parse(content) as AgentResponse
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    throw new Error('OpenAI response was not valid JSON')
+  }
 
   return normalizeAgentResponse(parsed)
 }
 
 function buildSystemPrompt(request: AgentRequest) {
   const languageInstruction = request.language === 'ko'
-    ? 'Respond in Korean.'
-    : 'Respond in English.'
+    ? '모든 사용자 표시 텍스트는 한국어로 작성한다.'
+    : 'Write all user-facing text in English.'
+
+  const jsonContract = `Return only one JSON object with this shape:
+{
+  "message": "short explanation",
+  "suggestions": [
+    {
+      "id": "suggestion_1",
+      "type": "update_region | ask_followup | create_character | update_character | suggest_relationship",
+      "title": "suggestion title",
+      "description": "suggestion description",
+      "targetId": "target id or null",
+      "patch": {
+        "name": "optional region name",
+        "regionType": "continent | ocean | mountain | forest | desert | nation | city | dimension_gate",
+        "climate": "optional climate text",
+        "loreSummary": "optional lore summary text"
+      },
+      "followUpQuestion": "optional follow-up question or null",
+      "payload": null
+    }
+  ],
+  "followUpQuestions": ["question 1", "question 2"]
+}`
 
   const commonRules = [
     'You are a story development assistant for a fiction worldbuilding app.',
     'You suggest improvements; you never claim that changes have already been saved.',
-    'Return only valid JSON matching the schema.',
+    'Return only valid JSON. Do not wrap it in markdown fences.',
     'Keep suggestions specific, internally consistent, and usable by a UI.',
     'When patching data, preserve existing user intent and improve specificity rather than replacing everything.',
     'Prefer concise but high-value suggestions.',
     languageInstruction,
+    jsonContract,
   ].join('\n')
 
   if (request.mode === 'map') {
@@ -197,9 +176,10 @@ function buildSystemPrompt(request: AgentRequest) {
       commonRules,
       'Current task: Map Agent.',
       'Focus on selected region name, climate, loreSummary, geography, trade, war, migration, religion, taboo, historical scars, and links to the central world conflict.',
-      'If a selectedRegion exists, create at most one update_region suggestion for that targetId.',
+      'If context.selectedRegion exists, create at most one update_region suggestion for that targetId.',
       'Do not invent impossible geometry or coordinates. Only patch name, regionType, climate, and loreSummary.',
       'Also provide 2-4 follow-up questions that help the user deepen the worldbuilding.',
+      'If no selectedRegion exists, return ask_followup suggestions instead of update_region.',
     ].join('\n')
   }
 
@@ -210,28 +190,49 @@ function buildSystemPrompt(request: AgentRequest) {
   ].join('\n')
 }
 
-function normalizeAgentResponse(response: AgentResponse): AgentResponse {
+function normalizeAgentResponse(value: unknown): AgentResponse {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Agent response JSON root was not an object')
+  }
+
+  const candidate = value as Partial<AgentResponse>
+
   return {
-    message: response.message ?? '',
-    suggestions: Array.isArray(response.suggestions)
-      ? response.suggestions.map((suggestion, index) => ({
-          ...suggestion,
-          id: suggestion.id || `suggestion_${index + 1}`,
-          targetId: suggestion.targetId ?? undefined,
-          patch: cleanPatch(suggestion.patch),
-          followUpQuestion: suggestion.followUpQuestion ?? undefined,
-          payload: suggestion.payload ?? undefined,
-        }))
+    message: typeof candidate.message === 'string' ? candidate.message : '',
+    suggestions: Array.isArray(candidate.suggestions)
+      ? candidate.suggestions.map(normalizeSuggestion).filter(Boolean) as AgentSuggestion[]
       : [],
-    followUpQuestions: Array.isArray(response.followUpQuestions) ? response.followUpQuestions : [],
+    followUpQuestions: Array.isArray(candidate.followUpQuestions)
+      ? candidate.followUpQuestions.filter((question): question is string => typeof question === 'string')
+      : [],
   }
 }
 
-function cleanPatch(patch: Record<string, unknown> | null | undefined) {
-  if (!patch) return undefined
+function normalizeSuggestion(value: unknown, index: number): AgentSuggestion | null {
+  if (!value || typeof value !== 'object') return null
+
+  const candidate = value as Partial<AgentSuggestion>
+
+  return {
+    id: typeof candidate.id === 'string' && candidate.id ? candidate.id : `suggestion_${index + 1}`,
+    type: typeof candidate.type === 'string' && candidate.type ? candidate.type : 'ask_followup',
+    title: typeof candidate.title === 'string' ? candidate.title : `Suggestion ${index + 1}`,
+    description: typeof candidate.description === 'string' ? candidate.description : '',
+    targetId: typeof candidate.targetId === 'string' ? candidate.targetId : undefined,
+    patch: cleanPatch(candidate.patch),
+    followUpQuestion: typeof candidate.followUpQuestion === 'string' ? candidate.followUpQuestion : undefined,
+    payload: candidate.payload ?? undefined,
+  }
+}
+
+function cleanPatch(patch: unknown) {
+  if (!patch || typeof patch !== 'object') return undefined
+
+  const allowedKeys = new Set(['name', 'regionType', 'climate', 'loreSummary'])
 
   return Object.fromEntries(
-    Object.entries(patch).filter(([, value]) => value !== null && value !== undefined && value !== ''),
+    Object.entries(patch as Record<string, unknown>)
+      .filter(([key, value]) => allowedKeys.has(key) && value !== null && value !== undefined && value !== ''),
   )
 }
 
@@ -243,6 +244,10 @@ function jsonResponse(body: unknown, status: number) {
       'Content-Type': 'application/json',
     },
   })
+}
+
+function trimErrorText(value: string) {
+  return value.length > 700 ? `${value.slice(0, 700)}...` : value
 }
 
 function getErrorMessage(error: unknown) {
