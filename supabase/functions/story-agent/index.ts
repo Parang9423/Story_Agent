@@ -1,7 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts"
 
 type AgentMode = 'world' | 'map' | 'character' | 'relationship' | 'story' | 'continuity'
-type LlmProvider = 'gemini' | 'openai'
 
 type AgentRequest = {
   mode: AgentMode
@@ -73,74 +72,111 @@ function normalizeRequest(body: AgentRequest): AgentRequest {
 }
 
 async function callConfiguredProvider(request: AgentRequest): Promise<AgentResponse> {
-  const requestedProvider = normalizeProvider(Deno.env.get('LLM_PROVIDER'))
+  const provider = (Deno.env.get('LLM_PROVIDER') ?? '').toLowerCase()
   const geminiApiKey = Deno.env.get('GEMINI_API_KEY')
   const openAiApiKey = Deno.env.get('OPENAI_API_KEY')
 
-  if (requestedProvider === 'gemini') {
-    if (!geminiApiKey) throw new Error('GEMINI_API_KEY is not configured')
+  if (provider === 'gemini') {
+    if (!geminiApiKey) throw new Error('LLM_PROVIDER is gemini, but GEMINI_API_KEY is not configured')
     return callGemini(geminiApiKey, request)
   }
 
-  if (requestedProvider === 'openai') {
-    if (!openAiApiKey) throw new Error('OPENAI_API_KEY is not configured')
+  if (provider === 'openai') {
+    if (!openAiApiKey) throw new Error('LLM_PROVIDER is openai, but OPENAI_API_KEY is not configured')
     return callOpenAI(openAiApiKey, request)
   }
 
-  if (geminiApiKey) return callGemini(geminiApiKey, request)
-  if (openAiApiKey) return callOpenAI(openAiApiKey, request)
+  if (geminiApiKey) {
+    return callGemini(geminiApiKey, request)
+  }
+
+  if (openAiApiKey) {
+    return callOpenAI(openAiApiKey, request)
+  }
 
   throw new Error('No LLM provider is configured. Set GEMINI_API_KEY or OPENAI_API_KEY in Supabase Edge Function Secrets.')
 }
 
 async function callGemini(apiKey: string, request: AgentRequest): Promise<AgentResponse> {
-  const model = Deno.env.get('GEMINI_MODEL') ?? 'gemini-2.0-flash'
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`
+  const configuredModel = Deno.env.get('GEMINI_MODEL')
+  const modelCandidates = uniqueStrings([
+    configuredModel,
+    'gemini-3.8-flash',
+    'gemini-2.5-flash',
+    'gemini-1.5-flash-latest',
+    'gemini-1.5-flash',
+  ])
 
-  const apiResponse = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: buildSystemPrompt(request) }],
+  let lastModelError = ''
+
+  for (const model of modelCandidates) {
+    const normalizedModel = model.replace(/^models\//, '')
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`
+
+    const apiResponse = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: JSON.stringify({
-                mode: request.mode,
-                language: request.language,
-                userMessage: request.userMessage,
-                context: request.context,
-              }),
-            },
-          ],
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: [
+                  buildSystemPrompt(request),
+                  'User request JSON:',
+                  JSON.stringify({
+                    mode: request.mode,
+                    language: request.language,
+                    userMessage: request.userMessage,
+                    context: request.context,
+                  }),
+                ].join('\n\n'),
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          responseMimeType: 'application/json',
         },
-      ],
-      generationConfig: {
-        temperature: 0.7,
-        responseMimeType: 'application/json',
-      },
-    }),
-  })
+      }),
+    })
 
-  if (!apiResponse.ok) {
-    const errorText = await apiResponse.text()
-    throw new Error(`Gemini API request failed: ${apiResponse.status} ${trimErrorText(errorText)}`)
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text()
+      const trimmedError = trimErrorText(errorText)
+      lastModelError = `Gemini API request failed with model ${normalizedModel}: ${apiResponse.status} ${trimmedError}`
+
+      if (apiResponse.status === 404 && modelCandidates.length > 1) {
+        console.warn(lastModelError)
+        continue
+      }
+
+      throw new Error(lastModelError)
+    }
+
+    const data = await apiResponse.json()
+    const content = data?.candidates?.[0]?.content?.parts?.[0]?.text
+
+    if (typeof content !== 'string') {
+      throw new Error(`Gemini response did not include text content for model ${normalizedModel}`)
+    }
+
+    let parsed: unknown
+
+    try {
+      parsed = JSON.parse(stripJsonFence(content))
+    } catch {
+      throw new Error(`Gemini response was not valid JSON for model ${normalizedModel}`)
+    }
+
+    return normalizeAgentResponse(parsed)
   }
 
-  const data = await apiResponse.json()
-  const content = extractGeminiText(data)
-
-  if (!content) {
-    throw new Error('Gemini response did not include text content')
-  }
-
-  return normalizeAgentResponse(parseJsonContent(content, 'Gemini'))
+  throw new Error(lastModelError || 'Gemini API request failed for all configured model candidates')
 }
 
 async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentResponse> {
@@ -186,7 +222,15 @@ async function callOpenAI(apiKey: string, request: AgentRequest): Promise<AgentR
     throw new Error('OpenAI response did not include JSON content')
   }
 
-  return normalizeAgentResponse(parseJsonContent(content, 'OpenAI'))
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(stripJsonFence(content))
+  } catch {
+    throw new Error('OpenAI response was not valid JSON')
+  }
+
+  return normalizeAgentResponse(parsed)
 }
 
 function buildSystemPrompt(request: AgentRequest) {
@@ -247,38 +291,6 @@ function buildSystemPrompt(request: AgentRequest) {
   ].join('\n')
 }
 
-function extractGeminiText(value: unknown): string {
-  const data = value as {
-    candidates?: Array<{
-      content?: {
-        parts?: Array<{ text?: unknown }>
-      }
-    }>
-  }
-
-  const parts = data.candidates?.[0]?.content?.parts ?? []
-
-  return parts
-    .map((part) => typeof part.text === 'string' ? part.text : '')
-    .filter(Boolean)
-    .join('\n')
-    .trim()
-}
-
-function parseJsonContent(content: string, providerName: string): unknown {
-  const trimmed = content.trim()
-  const withoutFence = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim()
-
-  try {
-    return JSON.parse(withoutFence)
-  } catch {
-    throw new Error(`${providerName} response was not valid JSON: ${trimErrorText(withoutFence)}`)
-  }
-}
-
 function normalizeAgentResponse(value: unknown): AgentResponse {
   if (!value || typeof value !== 'object') {
     throw new Error('Agent response JSON root was not an object')
@@ -325,14 +337,6 @@ function cleanPatch(patch: unknown) {
   )
 }
 
-function normalizeProvider(value: string | undefined): LlmProvider | null {
-  if (!value) return null
-  const normalized = value.trim().toLowerCase()
-
-  if (normalized === 'gemini' || normalized === 'openai') return normalized
-  return null
-}
-
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
     status,
@@ -341,6 +345,25 @@ function jsonResponse(body: unknown, status: number) {
       'Content-Type': 'application/json',
     },
   })
+}
+
+function stripJsonFence(value: string) {
+  return value
+    .trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim()
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  )
 }
 
 function trimErrorText(value: string) {
